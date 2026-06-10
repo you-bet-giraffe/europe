@@ -1,0 +1,14 @@
+{
+  "west": 12.0,
+  "east": 21.0,
+  "south": 40.0,
+  "north": 46.5,
+  "zoom": 12,
+  "crs": "EPSG:32633",
+  "resolution": 25.0,
+  "tile_size": 4000.0,
+  "output_dir": "output",
+  "bucket": "",
+  "endpoint_url": "",
+  "key_prefix": "world"
+}

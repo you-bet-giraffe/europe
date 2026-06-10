@@ -1,0 +1,23 @@
+{
+  "name": "client",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "@babylonjs/core": "^9.11.0",
+    "@babylonjs/gui": "^9.11.0",
+    "@babylonjs/loaders": "^9.11.0"
+  },
+  "devDependencies": {
+    "typescript": "^6.0.3",
+    "vite": "^6.4.3"
+  }
+}

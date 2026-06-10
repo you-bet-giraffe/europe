@@ -1,0 +1,2 @@
+[console_scripts]
+pipeline = pipeline.cli:main

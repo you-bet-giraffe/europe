@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Empires</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
+      #render-canvas { width: 100%; height: 100%; touch-action: none; }
+    </style>
+  </head>
+  <body>
+    <canvas id="render-canvas"></canvas>
+    <div id="debug-hud" style="position:fixed;top:8px;left:8px;color:#0f0;font:12px monospace;z-index:9999;pointer-events:none;white-space:pre;text-shadow:1px 1px 2px #000"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
