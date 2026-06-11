@@ -122,7 +122,7 @@ export class Game {
           const remote = this.remotePlayers.get(p.id);
           if (remote) {
             remote.targetPos.copyFrom(this.remoteFeet(p));
-            remote.character.holder.rotation.y = p.rotation + Math.PI;
+            remote.character.holder.rotation.y = p.rotation;
           } else {
             this.spawnRemotePlayer(p);
           }
@@ -173,7 +173,7 @@ export class Game {
     const character = this.characterFactory.create(`remoteCharacter_${player.id}`);
     const feet = this.remoteFeet(player);
     character.holder.position.copyFrom(feet);
-    character.holder.rotation.y = player.rotation + Math.PI;
+    character.holder.rotation.y = player.rotation;
     character.setLocomotion("idle");
     const shadows = this.scene.metadata.shadows as ShadowGenerator;
     for (const mesh of character.meshes) shadows.addShadowCaster(mesh);
@@ -252,7 +252,7 @@ export class Game {
     const holder = this.character.holder;
     holder.parent = this.playerMesh;
     holder.position.y = -1;        // capsule centre is 1 m above its base
-    holder.rotation.y = Math.PI;   // model faces -Z; align with the capsule's forward
+    holder.rotation.y = 0;         // model already faces the capsule's forward (+Z)
 
     this.playerMesh.isVisible = false;
     const shadows = this.scene.metadata.shadows as ShadowGenerator;
