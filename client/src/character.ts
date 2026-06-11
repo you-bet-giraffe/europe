@@ -5,9 +5,37 @@ import {
   AnimationGroup,
   TransformNode,
   Skeleton,
+  StandardMaterial,
+  Color3,
+  type Material,
+  type PBRMaterial,
   type AbstractMesh,
 } from "@babylonjs/core";
 import "@babylonjs/loaders/glTF";
+
+// Babylon's WebGPU backend renders glTF PBR materials as flat white in this
+// version (they shade correctly on WebGL2). Swap them for StandardMaterial,
+// which renders consistently on both backends. Placeholder-grade — if real PBR
+// character art is needed later, revisit once the WebGPU path is fixed.
+function convertPbrToStandard(scene: Scene, container: AssetContainer): void {
+  const cache = new Map<Material, StandardMaterial>();
+  for (const mesh of container.meshes) {
+    const mat = mesh.material;
+    if (!mat || mat.getClassName() !== "PBRMaterial") continue;
+    let std = cache.get(mat);
+    if (!std) {
+      const pbr = mat as PBRMaterial;
+      std = new StandardMaterial(`${pbr.name}_std`, scene);
+      std.diffuseColor = pbr.albedoColor?.clone() ?? new Color3(0.8, 0.8, 0.8);
+      std.diffuseTexture = pbr.albedoTexture ?? null;
+      std.emissiveColor = pbr.emissiveColor?.clone() ?? new Color3(0, 0, 0);
+      std.specularColor = new Color3(0.05, 0.05, 0.05); // matte, like the rough PBR source
+      std.alpha = pbr.alpha;
+      cache.set(mat, std);
+    }
+    mesh.material = std;
+  }
+}
 
 export type Locomotion = "idle" | "walk" | "run";
 
@@ -49,6 +77,7 @@ export class CharacterFactory {
 
   static async load(scene: Scene, url: string, targetHeight = 1.8): Promise<CharacterFactory> {
     const container = await SceneLoader.LoadAssetContainerAsync("", url, scene);
+    convertPbrToStandard(scene, container);
     return new CharacterFactory(container, scene, targetHeight);
   }
 
