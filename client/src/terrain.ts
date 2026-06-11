@@ -212,7 +212,12 @@ export class TileStreamer {
     const allNodes: TransformNode[] = [...result.meshes, ...result.transformNodes];
     const root = allNodes.find(n => !n.parent) ?? result.meshes[0];
 
+    // The glTF loader applies rotationQuaternion=180°Y and scaling=(1,1,-1) to
+    // convert right-handed glTF to Babylon's left-handed space. Our pipeline
+    // already writes vertices in scene orientation (x east, z south), so reset
+    // both — keeping the z-flip would shift every tile one tile north, mirrored.
     root.rotationQuaternion = Quaternion.Identity();
+    root.scaling.setAll(1);
     root.position.set(gameX, 0, -(gameZ + TILE_SIZE));
 
     const mat = new StandardMaterial(matName, this.scene);
@@ -247,13 +252,13 @@ export class TileStreamer {
     await this.loadTile(tx, ty, tileGameX, tileGameZ);
   }
 
-  // Raycast downward — iterate all enabled geo meshes, fast (bounding-sphere)
-  // reject first then exact triangle test.  Logs diagnostic to _lastDebug.
+  // Raycast downward — iterate all enabled geo meshes.  Uses ray.intersectsMesh,
+  // which transforms the world-space ray into mesh-local space (mesh.intersects
+  // expects a local-space ray and would never hit).  Logs diagnostic to _lastDebug.
   getHeightAt(sceneX: number, sceneZ: number): number | null {
     const ray = new Ray(new Vector3(sceneX, 10000, sceneZ), new Vector3(0, -1, 0), 20000);
     let best: number | null = null;
-    let fastHits = 0;
-    let slowHits = 0;
+    let hits = 0;
 
     for (const mesh of this.scene.meshes) {
       if (mesh.name === "player") continue;
@@ -262,19 +267,16 @@ export class TileStreamer {
 
       mesh.computeWorldMatrix(true);
 
-      if (!mesh.intersects(ray, true).hit) continue;
-      fastHits++;
-
-      const info = mesh.intersects(ray, false);
+      const info = ray.intersectsMesh(mesh, false);
       if (!info.hit) continue;
-      slowHits++;
+      hits++;
       if (info.pickedPoint && (best === null || info.pickedPoint.y > best)) {
         best = info.pickedPoint.y;
       }
     }
 
     if (++this._debugCounter % 60 === 0) {
-      if (fastHits === 0) {
+      if (hits === 0) {
         // No bounding-sphere hits — show first enabled geo mesh bounding box
         const geo = this.scene.meshes.find(
           m => m.name !== "player" && (m.getTotalVertices?.() ?? 0) > 0 && m.isEnabled()
@@ -282,12 +284,12 @@ export class TileStreamer {
         if (geo) {
           geo.computeWorldMatrix(true);
           const bb = geo.getBoundingInfo().boundingBox;
-          this._lastDebug = `${geo.name} z[${bb.minimumWorld.z.toFixed(0)},${bb.maximumWorld.z.toFixed(0)}] hits:fast=0`;
+          this._lastDebug = `${geo.name} z[${bb.minimumWorld.z.toFixed(0)},${bb.maximumWorld.z.toFixed(0)}] hits=0`;
         } else {
           this._lastDebug = `no enabled geo meshes`;
         }
       } else {
-        this._lastDebug = `fast:${fastHits} slow:${slowHits} y:${best?.toFixed(1) ?? "null"}`;
+        this._lastDebug = `hits:${hits} y:${best?.toFixed(1) ?? "null"}`;
       }
     }
 
