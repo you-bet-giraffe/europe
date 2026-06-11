@@ -26,7 +26,11 @@ export default defineConfig({
     screenshot: "only-on-failure",
     trace: "on-first-retry",
   },
-  projects: [{ name: "chromium", use: { browserName: "chromium" } }],
+  // Use the installed Google Chrome rather than Playwright's bundled
+  // chromium-headless-shell: the latter stalls Babylon's Draco/glTF streaming
+  // (terrain never fully loads), while real Chrome streams the scene to
+  // completion. Requires Chrome to be installed.
+  projects: [{ name: "chrome", use: { browserName: "chromium", channel: "chrome" } }],
   webServer: {
     command: "npm run dev",
     url: "http://localhost:5173",
