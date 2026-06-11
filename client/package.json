@@ -14,7 +14,8 @@
   "dependencies": {
     "@babylonjs/core": "^9.11.0",
     "@babylonjs/gui": "^9.11.0",
-    "@babylonjs/loaders": "^9.11.0"
+    "@babylonjs/loaders": "^9.11.0",
+    "@babylonjs/materials": "^9.11.0"
   },
   "devDependencies": {
     "typescript": "^6.0.3",

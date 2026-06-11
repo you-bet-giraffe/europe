@@ -1,4 +1,4 @@
-import { Scene, SceneLoader, DracoCompression, StandardMaterial, Color3, Texture, Quaternion, VertexBuffer, type AbstractMesh, type TransformNode } from "@babylonjs/core";
+import { Scene, SceneLoader, DracoCompression, StandardMaterial, Color3, Texture, Quaternion, VertexBuffer, VertexData, type AbstractMesh, type TransformNode } from "@babylonjs/core";
 import "@babylonjs/loaders/glTF";
 
 const TILE_SIZE         = 4000;   // metres per tile edge
@@ -8,7 +8,7 @@ const FINE_LOAD_RADIUS  = 6500;   // load fine tiles within this distance (cover
 const FINE_UNLOAD_RADIUS = 9000;  // drop fine tiles beyond this distance
 const MAX_CONCURRENT    = 4;      // parallel in-flight GLB requests per tier
 const UPDATE_INTERVAL   = 1000;   // ms between streaming checks
-const GRASS_REPEAT_M    = 10;     // grass texture repeats every N metres
+const GRASS_REPEAT_M    = 20;     // grass texture repeats every N metres
 
 export function configureDraco(): void {
   DracoCompression.Configuration = {
@@ -208,6 +208,9 @@ export class TileStreamer {
     const mat = new StandardMaterial("terrain", this.scene);
     const tex = new Texture("/textures/grass.jpg", this.scene);
     tex.uScale = tex.vScale = TILE_SIZE / GRASS_REPEAT_M;
+    // Max anisotropy — the ground is viewed at grazing angles, where the per-pixel
+    // texel footprint is highly elongated; 16× sampling kills the minification moiré.
+    tex.anisotropicFilteringLevel = 16;
     mat.diffuseTexture = tex;
     mat.specularColor = new Color3(0, 0, 0); // grass shouldn't glint
     mat.backFaceCulling = false;
@@ -249,6 +252,17 @@ export class TileStreamer {
 
       const positions = mesh.getVerticesData(VertexBuffer.PositionKind);
       if (positions) {
+        // The pipeline stores normals in a separate uncompressed buffer (DracoPy
+        // can't compress them), but the glTF KHR_draco loader only reads
+        // attributes packed inside the Draco blob (POSITION), so the mesh arrives
+        // with no normals — lit as stochastic garbage. Recompute from the geometry.
+        const indices = mesh.getIndices();
+        if (indices) {
+          const normals = new Float32Array(positions.length);
+          VertexData.ComputeNormals(positions, indices, normals);
+          mesh.setVerticesData(VertexBuffer.NormalKind, normals);
+        }
+
         // Tile GLBs carry no UVs (pipeline exports POSITION/NORMAL only), so
         // derive planar UVs from local x/z — one full UV repeat per tile, with
         // the texture's uScale/vScale handling the per-metre tiling.

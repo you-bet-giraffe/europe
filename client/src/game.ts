@@ -11,6 +11,7 @@ import {
   Color3,
   ShadowGenerator,
 } from "@babylonjs/core";
+import { SkyMaterial } from "@babylonjs/materials/sky";
 import { NetworkClient } from "./network";
 import { InputController } from "./input";
 import { TileStreamer, configureDraco } from "./terrain";
@@ -65,6 +66,7 @@ export class Game {
   async init(): Promise<void> {
     configureDraco();
     this.setupLighting();
+    this.setupSkybox();
     this.setupPlayer();
     this.setupCamera();
     this.setupHudToggle();
@@ -178,6 +180,32 @@ export class Game {
     this.scene.metadata = { shadows };
   }
 
+  private setupSkybox(): void {
+    // Box sized just inside the camera far plane (50 km). Coarse terrain only
+    // streams within UNLOAD_RADIUS (20 km), so its faces never occlude visible
+    // ground. infiniteDistance keeps it centred on the camera as the player roams.
+    const skybox = MeshBuilder.CreateBox("skybox", { size: 50000 }, this.scene);
+    skybox.infiniteDistance = true;
+    skybox.isPickable = false;
+    skybox.applyFog = false;
+    // The box mesh sits at the origin, but the world is offset to UTM coords
+    // ~400 km away, so its culling bounds never enter the frustum. infiniteDistance
+    // re-centres it on the camera at render time; skip culling so it always draws.
+    skybox.alwaysSelectAsActiveMesh = true;
+
+    const sky = new SkyMaterial("sky", this.scene);
+    sky.backFaceCulling = false;     // we view the box from the inside
+    sky.turbidity = 8;               // haze near the horizon
+    sky.luminance = 1;
+    sky.rayleigh = 2;                // sky-blue scattering strength
+    // Put the sun where the directional light comes from (opposite its travel
+    // direction) so the bright spot lines up with terrain shading and shadows.
+    const sun = this.scene.getLightByName("sun") as DirectionalLight | null;
+    sky.useSunPosition = true;
+    sky.sunPosition = (sun?.direction ?? new Vector3(-1, -2, -1)).negate().normalize();
+    skybox.material = sky;
+  }
+
   private setupPlayer(): void {
     this.playerMesh = MeshBuilder.CreateCapsule(
       "player", { height: 2, radius: 0.4 }, this.scene,
@@ -190,8 +218,10 @@ export class Game {
   }
 
   private setupCamera(): void {
+    // beta ≈ 83° (just under 90°) sits the camera nearly level with the ground,
+    // looking almost parallel to it with a slight downward tilt.
     this.camera = new ArcRotateCamera(
-      "camera", -Math.PI / 2, Math.PI / 3, 15,
+      "camera", -Math.PI / 2, 1.45, 15,
       this.playerMesh.position.clone(),
       this.scene,
     );
