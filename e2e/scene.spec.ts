@@ -39,4 +39,11 @@ test.describe("terrain scene", () => {
     const st = await readState(page);
     expect(st.skyboxActive).toBe(true);
   });
+
+  test("character model loads and animates", async ({ page }) => {
+    // The player capsule's visuals are replaced by an animated GLB character.
+    const st = await readState(page);
+    expect(st.characterLoaded).toBe(true);
+    expect(st.characterAnimating).toBe(true);
+  });
 });

@@ -11,6 +11,8 @@ export interface SceneState {
   ground: number | null;
   skyboxActive: boolean;
   tilesLoading: number;
+  characterLoaded: boolean;
+  characterAnimating: boolean;
   fps: number;
 }
 
@@ -21,17 +23,16 @@ export async function readState(page: Page): Promise<SceneState> {
     const empty: SceneState = {
       ready: false, terrainMeshCount: 0, sampleHasNormals: false, sampleHasUVs: false,
       sampleHasDiffuseTexture: false, playerY: null, ground: null, skyboxActive: false,
-      tilesLoading: -1, fps: 0,
+      tilesLoading: -1, characterLoaded: false, characterAnimating: false, fps: 0,
     };
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const s = (window as any).__scene;
     if (!s) return empty;
 
+    // Terrain meshes are the ones sharing the "terrain" material — this excludes
+    // the player, skybox, and character meshes regardless of their names.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const terrain = s.meshes.filter((m: any) => {
-      const v = m.getTotalVertices?.() ?? 0;
-      return v > 1000 && m.name !== "player" && m.name !== "skybox" && !m.name.startsWith("remote");
-    });
+    const terrain = s.meshes.filter((m: any) => m.material?.name === "terrain");
     const sample = terrain[0];
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const player = s.meshes.find((m: any) => m.name === "player");
@@ -46,6 +47,11 @@ export async function readState(page: Page): Promise<SceneState> {
     let skyboxActive = false;
     if (active) for (let i = 0; i < active.length; i++) if (active.data[i].name === "skybox") skyboxActive = true;
 
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const characterLoaded = s.transformNodes.some((n: any) => n.name === "playerCharacter");
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const characterAnimating = s.animationGroups.some((g: any) => g.isPlaying);
+
     return {
       ready: true,
       terrainMeshCount: terrain.length,
@@ -56,6 +62,8 @@ export async function readState(page: Page): Promise<SceneState> {
       ground,
       skyboxActive,
       tilesLoading,
+      characterLoaded,
+      characterAnimating,
       fps: s.getEngine().getFps(),
     };
   });

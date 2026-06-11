@@ -10,11 +10,13 @@ import {
   StandardMaterial,
   Color3,
   ShadowGenerator,
+  AnimationPropertiesOverride,
 } from "@babylonjs/core";
 import { SkyMaterial } from "@babylonjs/materials/sky";
 import { NetworkClient } from "./network";
 import { InputController } from "./input";
 import { TileStreamer, configureDraco } from "./terrain";
+import { Character } from "./character";
 import { TEST_MODE } from "./testMode";
 import type { PlayerState } from "../../shared/types";
 import { SPAWN_POINT } from "../../shared/types";
@@ -45,6 +47,7 @@ export class Game {
   private terrain:    TileStreamer;
   private camera!:    ArcRotateCamera;
   private playerMesh!: Mesh;
+  private character:   Character | null = null;
 
   private myId:          string | null = null;
   private remotePlayers  = new Map<string, RemotePlayer>();
@@ -91,6 +94,8 @@ export class Game {
     // fall to terrain via the per-frame ground collision in movePlayer).
     this.playerMesh.position.y = (elevation ?? 500) + 1;
     this.camera.target.y = this.playerMesh.position.y;
+
+    await this.setupCharacter();
 
     if (TEST_MODE) {
       // Expose the scene for test assertions; skip networking so the scene is
@@ -225,6 +230,28 @@ export class Game {
     (this.scene.metadata.shadows as ShadowGenerator).addShadowCaster(this.playerMesh);
   }
 
+  // Load the animated character model and attach it to the capsule, which stays
+  // as the (now invisible) movement/collision proxy. The model follows the
+  // capsule's position and facing; its feet sit at the capsule's base.
+  private async setupCharacter(): Promise<void> {
+    // Blend locomotion clips smoothly instead of snapping between them.
+    const blend = new AnimationPropertiesOverride();
+    blend.enableBlending = true;
+    blend.blendingSpeed = 0.08;
+    this.scene.animationPropertiesOverride = blend;
+
+    this.character = await Character.load(this.scene, "/models/robot.glb", 1.8);
+    const holder = this.character.holder;
+    holder.parent = this.playerMesh;
+    holder.position.y = -1;        // capsule centre is 1 m above its base
+    holder.rotation.y = Math.PI;   // model faces -Z; align with the capsule's forward
+
+    this.playerMesh.isVisible = false;
+    const shadows = this.scene.metadata.shadows as ShadowGenerator;
+    for (const mesh of this.character.meshes) shadows.addShadowCaster(mesh);
+    this.character.setLocomotion("idle");
+  }
+
   private setupCamera(): void {
     // beta ≈ 83° (just under 90°) sits the camera nearly level with the ground,
     // looking almost parallel to it with a slight downward tilt.
@@ -306,6 +333,10 @@ export class Game {
 
     // Camera always tracks player
     this.camera.target.copyFrom(this.playerMesh.position);
+
+    // Drive the character animation from movement state.
+    const moving = forward !== 0 || right !== 0;
+    this.character?.setLocomotion(!moving ? "idle" : sprint ? "run" : "walk");
   }
 
   private sendPosition(dt: number): void {
