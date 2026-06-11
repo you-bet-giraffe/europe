@@ -16,7 +16,7 @@ import { SkyMaterial } from "@babylonjs/materials/sky";
 import { NetworkClient } from "./network";
 import { InputController } from "./input";
 import { TileStreamer, configureDraco } from "./terrain";
-import { Character } from "./character";
+import { Character, CharacterFactory } from "./character";
 import { TEST_MODE } from "./testMode";
 import type { PlayerState } from "../../shared/types";
 import { SPAWN_POINT } from "../../shared/types";
@@ -36,8 +36,8 @@ const SPAWN_SCENE_X =  SPAWN_POINT.x;
 const SPAWN_SCENE_Z = -SPAWN_POINT.z;
 
 interface RemotePlayer {
-  mesh:      Mesh;
-  targetPos: Vector3;
+  character: Character;
+  targetPos: Vector3;   // scene-space feet position the instance lerps toward
 }
 
 export class Game {
@@ -47,6 +47,7 @@ export class Game {
   private terrain:    TileStreamer;
   private camera!:    ArcRotateCamera;
   private playerMesh!: Mesh;
+  private characterFactory: CharacterFactory | null = null;
   private character:   Character | null = null;
 
   private myId:          string | null = null;
@@ -119,9 +120,9 @@ export class Game {
         } else {
           seen.add(p.id);
           const remote = this.remotePlayers.get(p.id);
-          const pos = gameToScene(p.position.x, p.position.y, p.position.z);
           if (remote) {
-            remote.targetPos.copyFrom(pos);
+            remote.targetPos.copyFrom(this.remoteFeet(p));
+            remote.character.holder.rotation.y = p.rotation + Math.PI;
           } else {
             this.spawnRemotePlayer(p);
           }
@@ -159,24 +160,30 @@ export class Game {
     }
   }
 
+  // Server positions are the capsule centre (1 m above the feet); the character
+  // model is positioned by its feet.
+  private remoteFeet(player: PlayerState): Vector3 {
+    const p = gameToScene(player.position.x, player.position.y, player.position.z);
+    p.y -= 1;
+    return p;
+  }
+
   private spawnRemotePlayer(player: PlayerState): void {
-    if (this.remotePlayers.has(player.id)) return;
-    const pos = gameToScene(player.position.x, player.position.y, player.position.z);
-    const mesh = MeshBuilder.CreateCapsule(
-      `remote_${player.id}`, { height: 2, radius: 0.4 }, this.scene,
-    );
-    mesh.position.copyFrom(pos);
-    const mat = new StandardMaterial(`remote_mat_${player.id}`, this.scene);
-    mat.diffuseColor = new Color3(0.8, 0.2, 0.2);
-    mesh.material = mat;
-    this.remotePlayers.set(player.id, { mesh, targetPos: pos.clone() });
+    if (this.remotePlayers.has(player.id) || !this.characterFactory) return;
+    const character = this.characterFactory.create(`remoteCharacter_${player.id}`);
+    const feet = this.remoteFeet(player);
+    character.holder.position.copyFrom(feet);
+    character.holder.rotation.y = player.rotation + Math.PI;
+    character.setLocomotion("idle");
+    const shadows = this.scene.metadata.shadows as ShadowGenerator;
+    for (const mesh of character.meshes) shadows.addShadowCaster(mesh);
+    this.remotePlayers.set(player.id, { character, targetPos: feet.clone() });
   }
 
   private removeRemotePlayer(id: string): void {
     const remote = this.remotePlayers.get(id);
     if (!remote) return;
-    remote.mesh.material?.dispose();
-    remote.mesh.dispose();
+    remote.character.dispose();
     this.remotePlayers.delete(id);
   }
 
@@ -240,7 +247,8 @@ export class Game {
     blend.blendingSpeed = 0.08;
     this.scene.animationPropertiesOverride = blend;
 
-    this.character = await Character.load(this.scene, "/models/robot.glb", 1.8);
+    this.characterFactory = await CharacterFactory.load(this.scene, "/models/robot.glb", 1.8);
+    this.character = this.characterFactory.create("playerCharacter");
     const holder = this.character.holder;
     holder.parent = this.playerMesh;
     holder.position.y = -1;        // capsule centre is 1 m above its base
@@ -354,7 +362,13 @@ export class Game {
   private lerpRemotePlayers(dt: number): void {
     const t = Math.min(1, dt * REMOTE_LERP);
     for (const [, remote] of this.remotePlayers) {
-      Vector3.LerpToRef(remote.mesh.position, remote.targetPos, t, remote.mesh.position);
+      const h = remote.character.holder;
+      Vector3.LerpToRef(h.position, remote.targetPos, t, h.position);
+      // How far the instance is still trailing its target is a smooth proxy for
+      // speed (the lag stabilises at speed/REMOTE_LERP): pick the locomotion clip
+      // from it without needing network timing.
+      const gap = Math.hypot(remote.targetPos.x - h.position.x, remote.targetPos.z - h.position.z);
+      remote.character.setLocomotion(gap < 0.1 ? "idle" : gap < 1.2 ? "walk" : "run");
     }
   }
 
