@@ -1,4 +1,4 @@
-import { Scene, SceneLoader, DracoCompression, StandardMaterial, Color3, Texture, Quaternion, Ray, Vector3, VertexBuffer, type AbstractMesh, type TransformNode } from "@babylonjs/core";
+import { Scene, SceneLoader, DracoCompression, StandardMaterial, Color3, Texture, Quaternion, VertexBuffer, type AbstractMesh, type TransformNode } from "@babylonjs/core";
 import "@babylonjs/loaders/glTF";
 
 const TILE_SIZE         = 4000;   // metres per tile edge
@@ -29,9 +29,11 @@ interface WorldMeta {
 }
 
 interface LoadedTile {
-  gameX: number;
-  gameZ: number;
-  root:  TransformNode;
+  gameX:   number;
+  gameZ:   number;
+  root:    TransformNode;
+  heights: Float32Array;  // vpe×vpe elevation grid (row-major: row=south idx, col=east idx)
+  vpe:     number;        // vertices per edge of the square grid
 }
 
 export class TileStreamer {
@@ -41,7 +43,7 @@ export class TileStreamer {
   private loaded  = new Map<string, LoadedTile>();
   private loading = new Set<string>();
 
-  // Fine tiles (2 m mesh spacing) — loaded close to the player
+  // Fine tiles (5 m mesh spacing) — loaded close to the player
   private fineLoaded  = new Map<string, LoadedTile>();
   private fineLoading = new Set<string>();
 
@@ -147,17 +149,17 @@ export class TileStreamer {
     const key = `${tx}_${ty}`;
     this.loading.add(key);
     try {
-      const root = await this.importTile(
+      const tile = await this.importTile(
         `${this.serverUrl}/tiles/`, `${tx}_${ty}.glb`, gameX, gameZ,
       );
-      if (!root) return;
+      if (!tile) return;
 
       // If a fine tile is already present for this key, start hidden
       if (this.fineLoaded.has(key)) {
-        root.setEnabled(false);
+        tile.root.setEnabled(false);
       }
 
-      this.loaded.set(key, { gameX, gameZ, root });
+      this.loaded.set(key, { gameX, gameZ, ...tile });
     } catch (err) {
       this.pushError(`${key}: ${String(err).slice(0, 80)}`);
     } finally {
@@ -171,15 +173,15 @@ export class TileStreamer {
     const key = `${tx}_${ty}`;
     this.fineLoading.add(key);
     try {
-      const root = await this.importTile(
+      const tile = await this.importTile(
         `${this.serverUrl}/tiles/fine/`, `${tx}_${ty}.glb`, gameX, gameZ,
       );
-      if (!root) return;
+      if (!tile) return;
 
       // Hide the coarse counterpart while fine is visible
       this.loaded.get(key)?.root.setEnabled(false);
 
-      this.fineLoaded.set(key, { gameX, gameZ, root });
+      this.fineLoaded.set(key, { gameX, gameZ, ...tile });
       this._lastDebug = `LOD fine ${key} loaded`;
     } catch {
       // Fine tile not generated yet — coarse stays visible, no error logged
@@ -213,14 +215,15 @@ export class TileStreamer {
     return mat;
   }
 
-  // Shared GLTF import helper — positions the root and applies the terrain material.
-  // Returns the root TransformNode, or null if no geometry was found.
+  // Shared GLTF import helper — positions the root, applies the terrain material,
+  // and extracts a height grid for collision sampling.  Returns null if the GLB
+  // held no geometry.
   private async importTile(
     baseUrl: string,
     filename: string,
     gameX: number,
     gameZ: number,
-  ): Promise<TransformNode | null> {
+  ): Promise<{ root: TransformNode; heights: Float32Array; vpe: number } | null> {
     const result = await SceneLoader.ImportMeshAsync("", baseUrl, filename, this.scene);
     if (result.meshes.length === 0) return null;
 
@@ -238,14 +241,18 @@ export class TileStreamer {
     const mat = this.getTerrainMaterial();
 
     let geoCount = 0;
+    let heights: Float32Array | null = null;
+    let vpe = 0;
     for (const mesh of result.meshes) {
       const tv = (mesh as AbstractMesh & { getTotalVertices?(): number }).getTotalVertices?.() ?? 0;
-      if (tv > 0) {
+      if (tv === 0) continue;
+
+      const positions = mesh.getVerticesData(VertexBuffer.PositionKind);
+      if (positions) {
         // Tile GLBs carry no UVs (pipeline exports POSITION/NORMAL only), so
         // derive planar UVs from local x/z — one full UV repeat per tile, with
         // the texture's uScale/vScale handling the per-metre tiling.
-        const positions = mesh.getVerticesData(VertexBuffer.PositionKind);
-        if (positions && !mesh.getVerticesData(VertexBuffer.UVKind)) {
+        if (!mesh.getVerticesData(VertexBuffer.UVKind)) {
           const uvs = new Float32Array((positions.length / 3) * 2);
           for (let i = 0, j = 0; i < positions.length; i += 3, j += 2) {
             uvs[j]     = positions[i]     / TILE_SIZE;
@@ -253,14 +260,32 @@ export class TileStreamer {
           }
           mesh.setVerticesData(VertexBuffer.UVKind, uvs);
         }
-        mesh.material  = mat;
-        mesh.isPickable = true;
-        geoCount++;
+
+        // Rebuild the regular elevation grid for O(1) height sampling.  Draco
+        // reorders vertices on compression, so we can't trust buffer order —
+        // instead snap each vertex to its grid cell by rounding local x/z.  The
+        // grid is square (vpe×vpe) with vpe derivable from the vertex count.
+        if (!heights) {
+          vpe = Math.round(Math.sqrt(positions.length / 3));
+          const spacing = TILE_SIZE / (vpe - 1);
+          heights = new Float32Array(vpe * vpe);
+          for (let i = 0; i < positions.length; i += 3) {
+            const col = Math.round(positions[i]     / spacing);
+            const row = Math.round(positions[i + 2] / spacing);
+            if (col >= 0 && col < vpe && row >= 0 && row < vpe) {
+              heights[row * vpe + col] = positions[i + 1];
+            }
+          }
+        }
       }
+
+      mesh.material   = mat;
+      mesh.isPickable = false; // height comes from the grid, not ray picking
+      geoCount++;
     }
     this._lastDebug = `${filename} geo=${geoCount}`;
 
-    return geoCount > 0 ? root : null;
+    return geoCount > 0 && heights ? { root, heights, vpe } : null;
   }
 
   // Force-load the tile covering (sceneX, sceneZ) and wait for it to finish.
@@ -277,48 +302,40 @@ export class TileStreamer {
     await this.loadTile(tx, ty, tileGameX, tileGameZ);
   }
 
-  // Raycast downward — iterate all enabled geo meshes.  Uses ray.intersectsMesh,
-  // which transforms the world-space ray into mesh-local space (mesh.intersects
-  // expects a local-space ray and would never hit).  Logs diagnostic to _lastDebug.
+  // Sample terrain elevation at a scene-space XZ point by bilinearly
+  // interpolating the stored height grid of the tile beneath it.  O(1) per call
+  // — no per-frame raycast.  Prefers the fine tile when loaded, else coarse.
+  // Returns world Y, or null if the covering tile hasn't loaded yet.
   getHeightAt(sceneX: number, sceneZ: number): number | null {
-    const ray = new Ray(new Vector3(sceneX, 10000, sceneZ), new Vector3(0, -1, 0), 20000);
-    let best: number | null = null;
-    let hits = 0;
+    if (!this.meta) return null;
+    const { gridOriginX, northEdgeZ } = this.meta;
+    const tx = Math.floor((sceneX - gridOriginX) / TILE_SIZE);
+    const ty = Math.floor((northEdgeZ + sceneZ)   / TILE_SIZE);
+    const key = `${tx}_${ty}`;
+    const isFine = this.fineLoaded.has(key);
+    const tile = this.fineLoaded.get(key) ?? this.loaded.get(key);
+    if (!tile) return null;
 
-    for (const mesh of this.scene.meshes) {
-      if (mesh.name === "player") continue;
-      if ((mesh.getTotalVertices?.() ?? 0) === 0) continue;
-      if (!mesh.isEnabled()) continue;
+    const { heights, vpe, gameX, gameZ } = tile;
+    // Local coords within the tile: root sits at (gameX, 0, -(gameZ+TILE_SIZE)).
+    const fcol = (sceneX - gameX) / (TILE_SIZE / (vpe - 1));
+    const frow = (sceneZ + gameZ + TILE_SIZE) / (TILE_SIZE / (vpe - 1));
+    // Clamp the base cell so a point on the south/east edge still has a +1 cell.
+    const col0 = Math.min(Math.max(Math.floor(fcol), 0), vpe - 2);
+    const row0 = Math.min(Math.max(Math.floor(frow), 0), vpe - 2);
+    const fx = fcol - col0;
+    const fz = frow - row0;
 
-      mesh.computeWorldMatrix(true);
-
-      const info = ray.intersectsMesh(mesh, false);
-      if (!info.hit) continue;
-      hits++;
-      if (info.pickedPoint && (best === null || info.pickedPoint.y > best)) {
-        best = info.pickedPoint.y;
-      }
-    }
+    const h00 = heights[row0 * vpe + col0];
+    const h10 = heights[row0 * vpe + col0 + 1];
+    const h01 = heights[(row0 + 1) * vpe + col0];
+    const h11 = heights[(row0 + 1) * vpe + col0 + 1];
+    const y = (h00 + (h10 - h00) * fx) * (1 - fz) + (h01 + (h11 - h01) * fx) * fz;
 
     if (++this._debugCounter % 60 === 0) {
-      if (hits === 0) {
-        // No bounding-sphere hits — show first enabled geo mesh bounding box
-        const geo = this.scene.meshes.find(
-          m => m.name !== "player" && (m.getTotalVertices?.() ?? 0) > 0 && m.isEnabled()
-        );
-        if (geo) {
-          geo.computeWorldMatrix(true);
-          const bb = geo.getBoundingInfo().boundingBox;
-          this._lastDebug = `${geo.name} z[${bb.minimumWorld.z.toFixed(0)},${bb.maximumWorld.z.toFixed(0)}] hits=0`;
-        } else {
-          this._lastDebug = `no enabled geo meshes`;
-        }
-      } else {
-        this._lastDebug = `hits:${hits} y:${best?.toFixed(1) ?? "null"}`;
-      }
+      this._lastDebug = `h@${key} y:${y.toFixed(1)} ${isFine ? "fine" : "coarse"}`;
     }
-
-    return best;
+    return y;
   }
 
   // ── Diagnostics ───────────────────────────────────────────────────────────────
