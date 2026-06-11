@@ -8,6 +8,7 @@ const FINE_LOAD_RADIUS  = 6500;   // load fine tiles within this distance (cover
 const FINE_UNLOAD_RADIUS = 9000;  // drop fine tiles beyond this distance
 const MAX_CONCURRENT    = 4;      // parallel in-flight GLB requests per tier
 const UPDATE_INTERVAL   = 1000;   // ms between streaming checks
+const GRASS_REPEAT_M    = 10;     // grass texture repeats every N metres
 
 export function configureDraco(): void {
   DracoCompression.Configuration = {
@@ -147,7 +148,7 @@ export class TileStreamer {
     this.loading.add(key);
     try {
       const root = await this.importTile(
-        `${this.serverUrl}/tiles/`, `${tx}_${ty}.glb`, gameX, gameZ, `terrain_${tx}_${ty}`,
+        `${this.serverUrl}/tiles/`, `${tx}_${ty}.glb`, gameX, gameZ,
       );
       if (!root) return;
 
@@ -171,7 +172,7 @@ export class TileStreamer {
     this.fineLoading.add(key);
     try {
       const root = await this.importTile(
-        `${this.serverUrl}/tiles/fine/`, `${tx}_${ty}.glb`, gameX, gameZ, `terrain_fine_${tx}_${ty}`,
+        `${this.serverUrl}/tiles/fine/`, `${tx}_${ty}.glb`, gameX, gameZ,
       );
       if (!root) return;
 
@@ -197,6 +198,21 @@ export class TileStreamer {
     this.loaded.get(key)?.root.setEnabled(true);
   }
 
+  // Shared grass material — one texture for every tile, created on first use.
+  private terrainMat: StandardMaterial | null = null;
+
+  private getTerrainMaterial(): StandardMaterial {
+    if (this.terrainMat) return this.terrainMat;
+    const mat = new StandardMaterial("terrain", this.scene);
+    const tex = new Texture("/textures/grass.jpg", this.scene);
+    tex.uScale = tex.vScale = TILE_SIZE / GRASS_REPEAT_M;
+    mat.diffuseTexture = tex;
+    mat.specularColor = new Color3(0, 0, 0); // grass shouldn't glint
+    mat.backFaceCulling = false;
+    this.terrainMat = mat;
+    return mat;
+  }
+
   // Shared GLTF import helper — positions the root and applies the terrain material.
   // Returns the root TransformNode, or null if no geometry was found.
   private async importTile(
@@ -204,7 +220,6 @@ export class TileStreamer {
     filename: string,
     gameX: number,
     gameZ: number,
-    matName: string,
   ): Promise<TransformNode | null> {
     const result = await SceneLoader.ImportMeshAsync("", baseUrl, filename, this.scene);
     if (result.meshes.length === 0) return null;
@@ -220,14 +235,24 @@ export class TileStreamer {
     root.scaling.setAll(1);
     root.position.set(gameX, 0, -(gameZ + TILE_SIZE));
 
-    const mat = new StandardMaterial(matName, this.scene);
-    mat.diffuseColor = new Color3(0.2, 0.6, 0.2);
-    mat.backFaceCulling = false;
+    const mat = this.getTerrainMaterial();
 
     let geoCount = 0;
     for (const mesh of result.meshes) {
       const tv = (mesh as AbstractMesh & { getTotalVertices?(): number }).getTotalVertices?.() ?? 0;
       if (tv > 0) {
+        // Tile GLBs carry no UVs (pipeline exports POSITION/NORMAL only), so
+        // derive planar UVs from local x/z — one full UV repeat per tile, with
+        // the texture's uScale/vScale handling the per-metre tiling.
+        const positions = mesh.getVerticesData(VertexBuffer.PositionKind);
+        if (positions && !mesh.getVerticesData(VertexBuffer.UVKind)) {
+          const uvs = new Float32Array((positions.length / 3) * 2);
+          for (let i = 0, j = 0; i < positions.length; i += 3, j += 2) {
+            uvs[j]     = positions[i]     / TILE_SIZE;
+            uvs[j + 1] = positions[i + 2] / TILE_SIZE;
+          }
+          mesh.setVerticesData(VertexBuffer.UVKind, uvs);
+        }
         mesh.material  = mat;
         mesh.isPickable = true;
         geoCount++;
