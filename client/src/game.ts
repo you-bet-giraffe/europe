@@ -15,6 +15,7 @@ import { SkyMaterial } from "@babylonjs/materials/sky";
 import { NetworkClient } from "./network";
 import { InputController } from "./input";
 import { TileStreamer, configureDraco } from "./terrain";
+import { TEST_MODE } from "./testMode";
 import type { PlayerState } from "../../shared/types";
 import { SPAWN_POINT } from "../../shared/types";
 
@@ -90,7 +91,14 @@ export class Game {
     // fall to terrain via the per-frame ground collision in movePlayer).
     this.playerMesh.position.y = (elevation ?? 500) + 1;
     this.camera.target.y = this.playerMesh.position.y;
-    this.network.connect();
+
+    if (TEST_MODE) {
+      // Expose the scene for test assertions; skip networking so the scene is
+      // deterministic (no remote peers streaming in).
+      (window as unknown as { __scene: Scene }).__scene = this.scene;
+    } else {
+      this.network.connect();
+    }
   }
 
   // ── Networking ────────────────────────────────────────────────────────────────

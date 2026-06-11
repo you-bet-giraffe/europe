@@ -1,8 +1,10 @@
 import { AbstractEngine, Engine, WebGPUEngine } from "@babylonjs/core";
 import { Game } from "./game";
+import { TEST_MODE } from "./testMode";
 
 async function createEngine(canvas: HTMLCanvasElement): Promise<AbstractEngine> {
-  if (await WebGPUEngine.IsSupportedAsync) {
+  // Tests force WebGL2 for reproducibility; otherwise prefer WebGPU.
+  if (!TEST_MODE && await WebGPUEngine.IsSupportedAsync) {
     const engine = new WebGPUEngine(canvas, {
       antialias: true,
       adaptToDeviceRatio: true,
@@ -12,7 +14,7 @@ async function createEngine(canvas: HTMLCanvasElement): Promise<AbstractEngine> 
     return engine;
   }
 
-  console.log("WebGPU not supported, falling back to WebGL2");
+  console.log(TEST_MODE ? "Using WebGL2 (test mode)" : "WebGPU not supported, falling back to WebGL2");
   return new Engine(canvas, true, { adaptToDeviceRatio: true });
 }
 
