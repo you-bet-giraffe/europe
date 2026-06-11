@@ -3,8 +3,13 @@ import { Game } from "./game";
 import { TEST_MODE } from "./testMode";
 
 async function createEngine(canvas: HTMLCanvasElement): Promise<AbstractEngine> {
-  // Tests force WebGL2 for reproducibility; otherwise prefer WebGPU.
-  if (!TEST_MODE && await WebGPUEngine.IsSupportedAsync) {
+  // ?webgl forces the WebGL2 backend. Tests (?test) also force it. WebGL2 avoids
+  // current WebGPU rendering bugs (PBR materials render white, terrain textures
+  // go dark at distance), so it's the more reliable backend until those are
+  // resolved. Otherwise prefer WebGPU when available.
+  const forceWebGL = TEST_MODE || new URLSearchParams(location.search).has("webgl");
+
+  if (!forceWebGL && await WebGPUEngine.IsSupportedAsync) {
     const engine = new WebGPUEngine(canvas, {
       antialias: true,
       adaptToDeviceRatio: true,
@@ -14,7 +19,7 @@ async function createEngine(canvas: HTMLCanvasElement): Promise<AbstractEngine> 
     return engine;
   }
 
-  console.log(TEST_MODE ? "Using WebGL2 (test mode)" : "WebGPU not supported, falling back to WebGL2");
+  console.log(forceWebGL ? "Using WebGL2 (forced)" : "WebGPU not supported, falling back to WebGL2");
   return new Engine(canvas, true, { adaptToDeviceRatio: true });
 }
 
