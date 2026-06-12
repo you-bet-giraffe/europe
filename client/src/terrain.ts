@@ -213,7 +213,7 @@ export class TileStreamer {
     tex.anisotropicFilteringLevel = 16;
     mat.diffuseTexture = tex;
     mat.specularColor = new Color3(0, 0, 0); // grass shouldn't glint
-    mat.backFaceCulling = false;
+    mat.backFaceCulling = true; // terrain is only ever viewed from above
     this.terrainMat = mat;
     return mat;
   }
@@ -258,9 +258,22 @@ export class TileStreamer {
         // with no normals — lit as stochastic garbage. Recompute from the geometry.
         const indices = mesh.getIndices();
         if (indices) {
+          // Compute normals from the geometry's original winding first, so they
+          // point up regardless of the winding fix below.
           const normals = new Float32Array(positions.length);
           VertexData.ComputeNormals(positions, indices, normals);
           mesh.setVerticesData(VertexBuffer.NormalKind, normals);
+
+          // Resetting the loader's (1,1,-1) RH→LH scaling (above) dropped the
+          // winding flip that negative scale carried, leaving every triangle
+          // front-facing downward — invisible under back-face culling. Reverse
+          // each triangle's winding so the top surface faces the camera.
+          for (let i = 0; i + 2 < indices.length; i += 3) {
+            const t = indices[i + 1];
+            indices[i + 1] = indices[i + 2];
+            indices[i + 2] = t;
+          }
+          mesh.setIndices(indices, positions.length / 3);
         }
 
         // Tile GLBs carry no UVs (pipeline exports POSITION/NORMAL only), so
