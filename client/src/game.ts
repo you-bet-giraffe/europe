@@ -30,6 +30,7 @@ const SERVER_URL    = "http://localhost:4000";
 const SEND_HZ       = 20;   // position broadcast rate
 const RECONCILE_MAX = 5;    // metres: hard-snap threshold for local player correction
 const REMOTE_LERP   = 12;   // per-second lerp factor for remote player smoothing
+const REMOTE_AIRBORNE_EPS = 0.3; // m feet must clear local terrain to read as a jump
 
 // scene_z = -game_z  (positive scene Z points south, matching tile mesh row direction)
 const SPAWN_SCENE_X =  SPAWN_POINT.x;
@@ -38,6 +39,7 @@ const SPAWN_SCENE_Z = -SPAWN_POINT.z;
 interface RemotePlayer {
   character: Character;
   targetPos: Vector3;   // scene-space feet position the instance lerps toward
+  airborne: boolean;    // last-known off-ground state, for jump-anim edges
 }
 
 export class Game {
@@ -177,7 +179,7 @@ export class Game {
     character.setLocomotion("idle");
     const shadows = this.scene.metadata.shadows as ShadowGenerator;
     for (const mesh of character.meshes) shadows.addShadowCaster(mesh);
-    this.remotePlayers.set(player.id, { character, targetPos: feet.clone() });
+    this.remotePlayers.set(player.id, { character, targetPos: feet.clone(), airborne: false });
   }
 
   private removeRemotePlayer(id: string): void {
@@ -288,6 +290,7 @@ export class Game {
       } else if (this.grounded) {
         this.verticalVel = JUMP_SPEED;
         this.grounded = false;
+        this.character?.play("jump");
       }
     }
 
@@ -295,6 +298,7 @@ export class Game {
     if ((flyUp || flyDown) && !this.flying) {
       this.flying = true;
       this.verticalVel = 0;
+      this.character?.endAction(); // don't keep a mid-jump pose into flight
     }
 
     if (turn !== 0) this.camera.alpha -= turn * TURN_SPEED * dt;
@@ -330,6 +334,7 @@ export class Game {
         this.playerMesh.position.x,
         this.playerMesh.position.z,
       );
+      const wasGrounded = this.grounded;
       if (this.lastGroundY !== null && this.playerMesh.position.y < this.lastGroundY + 1) {
         this.playerMesh.position.y = this.lastGroundY + 1;
         this.verticalVel = 0;
@@ -337,6 +342,8 @@ export class Game {
       } else {
         this.grounded = false;
       }
+      // Landing edge → end the jump animation and blend back to locomotion.
+      if (this.grounded && !wasGrounded) this.character?.endAction();
     }
 
     // Camera always tracks player
@@ -364,9 +371,25 @@ export class Game {
     for (const [, remote] of this.remotePlayers) {
       const h = remote.character.holder;
       Vector3.LerpToRef(h.position, remote.targetPos, t, h.position);
+
+      // Jump animation, inferred from height like locomotion is from gap: feet
+      // sitting clear of the local terrain mean the peer is airborne. Toggle the
+      // one-shot jump clip on the take-off/landing edges. (Skip while the tile
+      // under them isn't loaded, so a missing height doesn't fake a landing.)
+      const ground = this.terrain.getHeightAt(remote.targetPos.x, remote.targetPos.z);
+      if (ground !== null) {
+        const airborne = remote.targetPos.y > ground + REMOTE_AIRBORNE_EPS;
+        if (airborne !== remote.airborne) {
+          if (airborne) remote.character.play("jump");
+          else remote.character.endAction();
+          remote.airborne = airborne;
+        }
+      }
+
       // How far the instance is still trailing its target is a smooth proxy for
       // speed (the lag stabilises at speed/REMOTE_LERP): pick the locomotion clip
-      // from it without needing network timing.
+      // from it without needing network timing. (Suppressed while a jump action
+      // plays — setLocomotion buffers it and resumes on landing.)
       const gap = Math.hypot(remote.targetPos.x - h.position.x, remote.targetPos.z - h.position.z);
       remote.character.setLocomotion(gap < 0.1 ? "idle" : gap < 1.2 ? "walk" : "run");
     }

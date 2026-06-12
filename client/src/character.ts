@@ -48,6 +48,13 @@ const CLIP_ALIASES: Record<Locomotion, string[]> = {
   run:  ["run", "sprint"],
 };
 
+// One-shot action clips, resolved the same way. "jump" is tried before any
+// "walkjump"/"runjump" variant because the bare clip sorts first in glTF order.
+const ACTION_ALIASES = {
+  jump: ["jump"],
+} as const;
+export type Action = keyof typeof ACTION_ALIASES;
+
 // Loads a character GLB once into an asset container, then stamps out
 // independent animated instances via instantiateModelsToScene. Each instance
 // gets its own skeleton and animation clips, so the local player and every
@@ -101,6 +108,11 @@ export class Character {
   private clips = new Map<string, AnimationGroup>();
   private skeletons: Skeleton[];
   private current: AnimationGroup | null = null;
+  // The locomotion the caller last asked for. While a one-shot action plays it
+  // is held here and resumed when the action ends, so the per-frame
+  // setLocomotion() calls don't cut the action short.
+  private desired: Locomotion = "idle";
+  private action: AnimationGroup | null = null;
 
   constructor(holder: TransformNode, meshes: AbstractMesh[], groups: AnimationGroup[], skeletons: Skeleton[]) {
     this.holder = holder;
@@ -113,13 +125,37 @@ export class Character {
   }
 
   // Switch locomotion clip; transitions are smoothed by the scene's
-  // animationPropertiesOverride. No-op if already current.
+  // animationPropertiesOverride. No-op if already current. While a one-shot
+  // action is playing the request is remembered and applied once it finishes.
   setLocomotion(state: Locomotion): void {
-    const clip = this.pick(state);
+    this.desired = state;
+    if (this.action) return;
+    const clip = this.pick(CLIP_ALIASES[state], true);
     if (!clip || clip === this.current) return;
     this.current?.stop();
     clip.start(true);
     this.current = clip;
+  }
+
+  // Play a one-shot action clip (e.g. jump). It runs unlooped and holds its
+  // final pose until end() resumes locomotion — for a jump that's the moment
+  // the player lands. No-op if the rig lacks the clip, so callers needn't
+  // feature-test.
+  play(action: Action): void {
+    const clip = this.pick(ACTION_ALIASES[action]);
+    if (!clip) return;
+    this.current?.stop();
+    this.action = clip;
+    this.current = null;
+    clip.start(false);
+  }
+
+  // End any one-shot action in progress and resume the locomotion requested
+  // while it played. No-op if no action is active.
+  endAction(): void {
+    if (!this.action) return;
+    this.action = null;
+    this.setLocomotion(this.desired);
   }
 
   dispose(): void {
@@ -128,10 +164,10 @@ export class Character {
     this.holder.dispose();
   }
 
-  private pick(state: Locomotion): AnimationGroup | null {
-    for (const fragment of CLIP_ALIASES[state]) {
+  private pick(fragments: readonly string[], fallback = false): AnimationGroup | null {
+    for (const fragment of fragments) {
       for (const [name, clip] of this.clips) if (name.includes(fragment)) return clip;
     }
-    return this.clips.values().next().value ?? null; // fallback: any clip
+    return fallback ? (this.clips.values().next().value ?? null) : null;
   }
 }
