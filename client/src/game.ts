@@ -252,7 +252,7 @@ export class Game {
     blend.blendingSpeed = 0.08;
     this.scene.animationPropertiesOverride = blend;
 
-    this.characterFactory = await CharacterFactory.load(this.scene, "/models/char2.glb", 1.8);
+    this.characterFactory = await CharacterFactory.load(this.scene, "/models/robot.glb", 1.8);
     this.character = this.characterFactory.create("playerCharacter");
     const holder = this.character.holder;
     holder.parent = this.playerMesh;
