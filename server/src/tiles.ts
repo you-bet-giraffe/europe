@@ -38,16 +38,6 @@ export class TileRegistry {
     console.log(`Loaded ${this.tiles.length} world tiles`);
   }
 
-  // Returns tiles whose SW corner is within radiusM of the given game-world point.
-  tilesNear(gameX: number, gameZ: number, radiusM: number): TileMeta[] {
-    const r2 = radiusM * radiusM;
-    return this.tiles.filter(t => {
-      const dx = t.gameX - gameX;
-      const dz = t.gameZ - gameZ;
-      return dx * dx + dz * dz <= r2;
-    });
-  }
-
   get count(): number {
     return this.tiles.length;
   }

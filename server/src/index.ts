@@ -8,9 +8,12 @@ import { World } from "./world";
 import { tileRegistry } from "./tiles";
 import type { ClientMessage, ServerMessage } from "../../shared/types";
 
-const PORT      = 4000;
-const TICK_RATE = 20; // Hz
-const TILES_DIR = process.env.TILES_DIR ?? "";
+const PORT            = 4000;
+const TICK_RATE       = 20;     // Hz
+const TILES_DIR       = process.env.TILES_DIR ?? "";
+const INTEREST_RADIUS = 20000;  // m: only sync peers within this range of each client
+const MAX_MSG_BYTES   = 4096;   // drop frames larger than this (moves are tiny)
+const MAX_MSGS_PER_SEC = 60;    // per-connection budget (client sends ~20/s)
 
 // Derived from world_meta.json at startup; served as /world/meta
 let worldMetaPayload: string | null = null;
@@ -19,7 +22,9 @@ function loadWorldMeta(): void {
   if (!TILES_DIR) return;
   try {
     const raw = JSON.parse(fs.readFileSync(path.join(TILES_DIR, "world_meta.json"), "utf-8"));
-    const TILE_PIXELS = 160; // intervals per tile (tp in pipeline)
+    // Grid intervals per tile (tp in the pipeline). Prefer the value the
+    // pipeline emits; fall back to the historical constant for older outputs.
+    const TILE_PIXELS = raw.tile_pixels ?? 160;
     worldMetaPayload = JSON.stringify({
       tileSize:    raw.tile_size,
       gridOriginX: raw.origin_utm_x - raw.center_utm_x,
@@ -77,7 +82,7 @@ const httpServer = http.createServer((req, res) => {
 
 // ── WebSocket game server ─────────────────────────────────────────────────────
 
-const wss = new WebSocketServer({ server: httpServer });
+const wss = new WebSocketServer({ server: httpServer, maxPayload: MAX_MSG_BYTES });
 const world = new World();
 const clients = new Map<string, WebSocket>();
 
@@ -105,7 +110,16 @@ wss.on("connection", (ws) => {
   send(ws, { type: "world_state", players: world.getPlayers() });
   broadcast({ type: "player_joined", player }, id);
 
+  // Per-connection rate limiter: a fixed-window message budget that resets each
+  // second. Cheap protection against a client flooding the move channel.
+  let msgCount  = 0;
+  let windowStart = Date.now();
+
   ws.on("message", (data) => {
+    const now = Date.now();
+    if (now - windowStart >= 1000) { windowStart = now; msgCount = 0; }
+    if (++msgCount > MAX_MSGS_PER_SEC) return;
+
     let msg: ClientMessage;
     try {
       msg = JSON.parse(data.toString()) as ClientMessage;
@@ -117,9 +131,6 @@ wss.on("connection", (ws) => {
       case "move":
         world.movePlayer(id, msg.position, msg.rotation);
         break;
-      case "ping":
-        send(ws, { type: "world_state", players: world.getPlayers() });
-        break;
     }
   });
 
@@ -130,9 +141,17 @@ wss.on("connection", (ws) => {
   });
 });
 
+// Each tick, send every client only the peers within its interest radius, so
+// world_state bandwidth scales with local crowding rather than the whole world.
 setInterval(() => {
   if (clients.size === 0) return;
-  broadcast({ type: "world_state", players: world.getPlayers() });
+  for (const [id, ws] of clients) {
+    if (ws.readyState !== WebSocket.OPEN) continue;
+    const me = world.getPlayer(id);
+    if (!me) continue;
+    const players = world.playersNear(me.position, INTEREST_RADIUS);
+    ws.send(JSON.stringify({ type: "world_state", players } satisfies ServerMessage));
+  }
 }, 1000 / TICK_RATE);
 
 // ── Startup ───────────────────────────────────────────────────────────────────

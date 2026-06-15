@@ -15,6 +15,7 @@ import {
 import { SkyMaterial } from "@babylonjs/materials/sky";
 import { NetworkClient } from "./network";
 import { InputController } from "./input";
+import { CameraCollider } from "./cameraCollider";
 import { TileStreamer, configureDraco } from "./terrain";
 import { Character, CharacterFactory } from "./character";
 import { TEST_MODE } from "./testMode";
@@ -31,9 +32,6 @@ const SEND_HZ       = 20;   // position broadcast rate
 const RECONCILE_MAX = 5;    // metres: hard-snap threshold for local player correction
 const REMOTE_LERP   = 12;   // per-second lerp factor for remote player smoothing
 const REMOTE_AIRBORNE_EPS = 0.3; // m feet must clear local terrain to read as a jump
-const CAM_CLEARANCE = 1.5;  // m the camera is kept above the terrain it would clip
-const CAM_STEP      = 0.5;  // m boom-shorten search resolution
-const CAM_RESTORE   = 3;    // per-second ease rate zooming back out once clear
 
 // scene_z = -game_z  (positive scene Z points south, matching tile mesh row direction)
 const SPAWN_SCENE_X =  SPAWN_POINT.x;
@@ -51,7 +49,9 @@ export class Game {
   private input:      InputController;
   private terrain:    TileStreamer;
   private camera!:    ArcRotateCamera;
+  private cameraCollider!: CameraCollider;
   private playerMesh!: Mesh;
+  private shadows!:    ShadowGenerator;
   private characterFactory: CharacterFactory | null = null;
   private character:   Character | null = null;
 
@@ -89,10 +89,12 @@ export class Game {
     await this.terrain.loadAtPosition(px, pz);
     // Render one frame so all world matrices are computed before raycasting.
     this.scene.render();
+    // Draco decompression finishes async, so the height grid may not be ready
+    // on the first try. Poll a few short intervals (rendering between each so
+    // world matrices update) until the spawn tile resolves a height.
     let elevation = this.terrain.getHeightAt(px, pz);
-    if (elevation === null) {
-      // Draco decompression may finish async; yield one microtask and retry.
-      await new Promise(r => setTimeout(r, 50));
+    for (let attempt = 0; attempt < 20 && elevation === null; attempt++) {
+      await new Promise(r => setTimeout(r, 25));
       this.scene.render();
       elevation = this.terrain.getHeightAt(px, pz);
     }
@@ -180,8 +182,7 @@ export class Game {
     character.holder.position.copyFrom(feet);
     character.holder.rotation.y = player.rotation;
     character.setLocomotion("idle");
-    const shadows = this.scene.metadata.shadows as ShadowGenerator;
-    for (const mesh of character.meshes) shadows.addShadowCaster(mesh);
+    for (const mesh of character.meshes) this.shadows.addShadowCaster(mesh);
     this.remotePlayers.set(player.id, { character, targetPos: feet.clone(), airborne: false });
   }
 
@@ -200,9 +201,8 @@ export class Game {
     ambient.groundColor = new Color3(0.2, 0.2, 0.2); // dim ground bounce so underground camera still sees terrain
     const sun = new DirectionalLight("sun", new Vector3(-1, -2, -1), this.scene);
     sun.intensity = 0.8;
-    const shadows = new ShadowGenerator(2048, sun);
-    shadows.useBlurExponentialShadowMap = true;
-    this.scene.metadata = { shadows };
+    this.shadows = new ShadowGenerator(2048, sun);
+    this.shadows.useBlurExponentialShadowMap = true;
   }
 
   private setupSkybox(): void {
@@ -239,7 +239,7 @@ export class Game {
     const mat = new StandardMaterial("playerMat", this.scene);
     mat.diffuseColor = new Color3(0.2, 0.4, 0.8);
     this.playerMesh.material = mat;
-    (this.scene.metadata.shadows as ShadowGenerator).addShadowCaster(this.playerMesh);
+    this.shadows.addShadowCaster(this.playerMesh);
   }
 
   // Load the animated character model and attach it to the capsule, which stays
@@ -252,7 +252,7 @@ export class Game {
     blend.blendingSpeed = 0.08;
     this.scene.animationPropertiesOverride = blend;
 
-    this.characterFactory = await CharacterFactory.load(this.scene, "/models/robot.glb", 1.8);
+    this.characterFactory = await CharacterFactory.load(this.scene, "/models/char2.glb", 1.8);
     this.character = this.characterFactory.create("playerCharacter");
     const holder = this.character.holder;
     holder.parent = this.playerMesh;
@@ -260,8 +260,7 @@ export class Game {
     holder.rotation.y = 0;         // model already faces the capsule's forward (+Z)
 
     this.playerMesh.isVisible = false;
-    const shadows = this.scene.metadata.shadows as ShadowGenerator;
-    for (const mesh of this.character.meshes) shadows.addShadowCaster(mesh);
+    for (const mesh of this.character.meshes) this.shadows.addShadowCaster(mesh);
     this.character.setLocomotion("idle");
   }
 
@@ -278,80 +277,11 @@ export class Game {
     this.camera.upperRadiusLimit = 2000;
     this.camera.minZ = 1;
     this.camera.maxZ = 50000;
-    this.camRadiusTarget = this.lastCamRadius = this.camera.radius;
     // Run after the camera consumes pointer/wheel input each frame, so the
     // collision reflects the mouse-driven orbit/zoom on the same frame instead
     // of clipping for a frame before the next update() correction.
-    this.camera.onAfterCheckInputsObservable.add(() => this.clampCameraToTerrain());
-  }
-
-  // Keep the camera above the terrain as the player and the mouse move it. The
-  // user's zoom is the radius we want; if the boom's far end sinks below the
-  // ground we first shorten it (sliding the camera up toward the player). When
-  // even the shortest boom still clips — e.g. orbiting the mouse straight down —
-  // shortening can't help, so we limit the pitch (beta) instead, which is what
-  // makes the mouse rotation itself stop at the ground.
-  private camRadiusTarget = 15;
-  private lastCamRadius   = 15;
-
-  private clampCameraToTerrain(): void {
-    const cam = this.camera;
-    const dt = this.scene.getEngine().getDeltaTime() / 1000;
-
-    // A radius that differs from what we wrote last frame can only be the wheel:
-    // treat that as the user's new wanted zoom, not a collision artefact.
-    if (Math.abs(cam.radius - this.lastCamRadius) > 1e-4) this.camRadiusTarget = cam.radius;
-    const wanted = this.camRadiusTarget;
-    const dir = this.camOrbitDir();
-
-    if (this.cameraClears(wanted, dir)) {
-      // Nothing in the way: ease back out to the wanted distance.
-      cam.radius += (wanted - cam.radius) * Math.min(1, dt * CAM_RESTORE);
-    } else {
-      const shorter = this.safeCameraRadius(wanted, dir);
-      if (this.cameraClears(shorter, dir)) {
-        cam.radius = shorter; // pull in immediately so the boom never clips
-      } else {
-        // Can't clear by zooming: hold the wanted distance and raise the pitch
-        // so the camera rides just above the ground (limits the downward orbit).
-        cam.radius = wanted;
-        const g = this.terrain.getHeightAt(cam.target.x + dir.x * wanted, cam.target.z + dir.z * wanted);
-        if (g !== null) {
-          const cosNeeded = (g + CAM_CLEARANCE - cam.target.y) / wanted;
-          cam.beta = Math.acos(Math.max(-1, Math.min(1, cosNeeded)));
-        }
-      }
-    }
-    this.lastCamRadius = cam.radius;
-  }
-
-  // Unit orbit direction (camera = target + radius·dir), derived from the angles
-  // so it reflects this frame's input even before the view matrix is rebuilt.
-  private camOrbitDir(): Vector3 {
-    const sinB = Math.sin(this.camera.beta);
-    return new Vector3(
-      Math.cos(this.camera.alpha) * sinB,
-      Math.cos(this.camera.beta),
-      Math.sin(this.camera.alpha) * sinB,
-    );
-  }
-
-  // Does the camera at this radius sit ≥ CAM_CLEARANCE above the terrain?
-  private cameraClears(r: number, dir: Vector3): boolean {
-    const tgt = this.camera.target;
-    const g = this.terrain.getHeightAt(tgt.x + dir.x * r, tgt.z + dir.z * r);
-    return g === null || tgt.y + dir.y * r >= g + CAM_CLEARANCE;
-  }
-
-  // Largest radius ≤ wanted whose camera point clears the terrain, or the lower
-  // limit if none does. Shrinking the radius only raises and nears the camera,
-  // so the safe region is the near end.
-  private safeCameraRadius(wanted: number, dir: Vector3): number {
-    const lower = this.camera.lowerRadiusLimit ?? 0;
-    for (let r = wanted; r > lower; r -= CAM_STEP) {
-      if (this.cameraClears(r, dir)) return r;
-    }
-    return lower;
+    this.cameraCollider = new CameraCollider(this.camera, this.terrain);
+    this.camera.onAfterCheckInputsObservable.add(() => this.cameraCollider.clamp());
   }
 
   // ── Per-frame ─────────────────────────────────────────────────────────────────

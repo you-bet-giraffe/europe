@@ -20,7 +20,13 @@ export class NetworkClient {
     });
 
     this.ws.addEventListener("message", (event) => {
-      const msg: ServerMessage = JSON.parse(event.data as string);
+      let msg: ServerMessage;
+      try {
+        msg = JSON.parse(event.data as string) as ServerMessage;
+      } catch {
+        console.warn("Ignoring malformed server message");
+        return;
+      }
       this.handleMessage(msg);
     });
 

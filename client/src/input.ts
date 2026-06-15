@@ -23,13 +23,19 @@ export class InputController {
   private keys       = new Set<string>();
   private justPressed = new Set<string>(); // cleared after each consume()
 
+  // Stored as fields so dispose() can remove the exact same references
+  // (removeEventListener matches by identity — fresh arrows would never match).
+  private onKeyDown = (e: KeyboardEvent) => {
+    this.keys.add(e.code);
+    this.justPressed.add(e.code);
+  };
+  private onKeyUp = (e: KeyboardEvent) => this.keys.delete(e.code);
+  private onBlur = () => { this.keys.clear(); this.justPressed.clear(); };
+
   constructor() {
-    window.addEventListener("keydown", (e) => {
-      this.keys.add(e.code);
-      this.justPressed.add(e.code);
-    });
-    window.addEventListener("keyup",  (e) => this.keys.delete(e.code));
-    window.addEventListener("blur",   ()  => { this.keys.clear(); this.justPressed.clear(); });
+    window.addEventListener("keydown", this.onKeyDown);
+    window.addEventListener("keyup",   this.onKeyUp);
+    window.addEventListener("blur",    this.onBlur);
   }
 
   // Returns true once per physical keypress; clears the record so the next
@@ -60,8 +66,8 @@ export class InputController {
   }
 
   dispose(): void {
-    window.removeEventListener("keydown", (e) => this.keys.add(e.code));
-    window.removeEventListener("keyup",   (e) => this.keys.delete(e.code));
-    window.removeEventListener("blur",    ()  => this.keys.clear());
+    window.removeEventListener("keydown", this.onKeyDown);
+    window.removeEventListener("keyup",   this.onKeyUp);
+    window.removeEventListener("blur",    this.onBlur);
   }
 }

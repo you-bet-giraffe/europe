@@ -20,5 +20,4 @@ export type ServerMessage =
   | { type: "player_left"; id: string };
 
 export type ClientMessage =
-  | { type: "move"; position: Vec3; rotation: number }
-  | { type: "ping"; timestamp: number };
+  | { type: "move"; position: Vec3; rotation: number };

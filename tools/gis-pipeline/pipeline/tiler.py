@@ -34,6 +34,7 @@ def tile(config) -> Path:
             "crs": config.crs,
             "resolution": config.resolution,
             "tile_size": config.tile_size,
+            "tile_pixels": tp,
             "verts_per_edge": vpe,
             "origin_utm_x": origin_utm_x,
             "origin_utm_y": origin_utm_y,
