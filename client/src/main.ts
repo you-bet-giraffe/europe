@@ -3,23 +3,23 @@ import { Game } from "./game";
 import { TEST_MODE } from "./testMode";
 
 async function createEngine(canvas: HTMLCanvasElement): Promise<AbstractEngine> {
-  // ?webgl forces the WebGL2 backend. Tests (?test) also force it. WebGL2 avoids
-  // current WebGPU rendering bugs (PBR materials render white, terrain textures
-  // go dark at distance), so it's the more reliable backend until those are
-  // resolved. Otherwise prefer WebGPU when available.
-  const forceWebGL = TEST_MODE || new URLSearchParams(location.search).has("webgl");
+  // WebGL2 is the default backend: Babylon's WebGPU path currently renders PBR
+  // materials flat white (and terrain darkens at distance), so WebGL2 is the
+  // reliable choice until those are fixed. Opt into WebGPU with ?webgpu to test
+  // that path; test mode (?test) always stays on WebGL2 for deterministic CI.
+  const wantsWebGPU = !TEST_MODE && new URLSearchParams(location.search).has("webgpu");
 
-  if (!forceWebGL && await WebGPUEngine.IsSupportedAsync) {
+  if (wantsWebGPU && await WebGPUEngine.IsSupportedAsync) {
     const engine = new WebGPUEngine(canvas, {
       antialias: true,
       adaptToDeviceRatio: true,
     });
     await engine.initAsync();
-    console.log("Using WebGPU");
+    console.log("Using WebGPU (opted in via ?webgpu)");
     return engine;
   }
 
-  console.log(forceWebGL ? "Using WebGL2 (forced)" : "WebGPU not supported, falling back to WebGL2");
+  console.log(wantsWebGPU ? "WebGPU not supported, using WebGL2" : "Using WebGL2");
   return new Engine(canvas, true, { adaptToDeviceRatio: true });
 }
 

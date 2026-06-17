@@ -30,7 +30,7 @@ and backed by a Node WebSocket server. It's an npm-workspaces monorepo.
 
 ## `client/` — the game frontend (Babylon.js, TypeScript, Vite)
 
-- **`src/main.ts`** — Entry point. Picks the render backend (WebGPU by default, WebGL2 forced via `?webgl` or test mode), creates the `Game`, runs the render loop.
+- **`src/main.ts`** — Entry point. Picks the render backend (WebGL2 by default; opt into WebGPU via `?webgpu`, though test mode always uses WebGL2), creates the `Game`, runs the render loop.
 - **`src/game.ts`** — The core (~640 lines). Owns the scene, camera, lighting, skybox, player capsule, movement/physics (gravity, jump, fly mode, sprint), camera-terrain collision clamping, network reconciliation for the local player, and lerp/animation of remote players. Converts between game coords and Babylon scene coords.
 - **`src/character.ts`** — Loads the animated `robot.glb`, manages locomotion clips (idle/walk/run/jump). Includes a workaround converting glTF PBR materials to `StandardMaterial` (WebGPU renders PBR white in this version).
 - **`src/terrain.ts`** — `TileStreamer`: streams terrain GLB meshes around the player in two tiers (coarse + fine), Draco-decompressed, with grass texturing and `getHeightAt()` ray casting for ground collision.
