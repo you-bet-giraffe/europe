@@ -1,4 +1,4 @@
-import { Scene, SceneLoader, DracoCompression, PBRMaterial, Texture, Quaternion, VertexBuffer, VertexData, type AbstractMesh, type TransformNode } from "@babylonjs/core";
+import { Scene, SceneLoader, DracoCompression, PBRMaterial, MaterialPluginBase, Color3, Texture, Quaternion, VertexBuffer, VertexData, type UniformBuffer, type AbstractMesh, type TransformNode } from "@babylonjs/core";
 import "@babylonjs/loaders/glTF";
 
 const TILE_SIZE         = 4000;   // metres per tile edge
@@ -34,6 +34,74 @@ interface LoadedTile {
   root:    TransformNode;
   heights: Float32Array;  // vpe×vpe elevation grid (row-major: row=south idx, col=east idx)
   vpe:     number;        // vertices per edge of the square grid
+}
+
+// Per-channel mean of grass_tex_macro.png (sampled offline). Dividing each octave
+// by this re-centres it on 1.0, so the macro re-tints the albedo around its
+// original tone instead of darkening or green-shifting it.
+const MACRO_MEAN: [number, number, number] = [0.3224, 0.3542, 0.0675];
+
+// Breaks up the obvious detail-texture tiling by modulating the terrain albedo
+// with a low-frequency colour map sampled in *world* space (so it's seamless
+// across tiles, independent of the per-tile detail UVs). Two octaves at
+// different scales are multiplied — the product of two periods has no visible
+// repeat of its own — and each is mean-normalised so the result averages 1.0.
+class GrassMacroPlugin extends MaterialPluginBase {
+  sizeM    = 240;  // world period of octave 1, in metres (octave 2 is 0.41×)
+  strength = 0.85; // 0 = no variation, 1 = full
+
+  constructor(material: PBRMaterial, private readonly macro: Texture) {
+    super(material, "GrassMacro", 200, {});
+    this._enable(true);
+  }
+
+  getClassName(): string { return "GrassMacroPlugin"; }
+
+  // Hold back the shader until the macro texture has decoded.
+  isReadyForSubMesh(): boolean { return this.macro.isReady(); }
+
+  getSamplers(samplers: string[]): void { samplers.push("macroSampler"); }
+
+  getUniforms() {
+    return {
+      ubo: [
+        { name: "uMacroSizeM",    size: 1, type: "float" },
+        { name: "uMacroStrength", size: 1, type: "float" },
+        { name: "uMacroMean",     size: 3, type: "vec3"  },
+      ],
+      fragment: `
+        uniform float uMacroSizeM;
+        uniform float uMacroStrength;
+        uniform vec3  uMacroMean;
+      `,
+    };
+  }
+
+  bindForSubMesh(uniformBuffer: UniformBuffer): void {
+    uniformBuffer.updateFloat("uMacroSizeM", this.sizeM);
+    uniformBuffer.updateFloat("uMacroStrength", this.strength);
+    uniformBuffer.updateFloat3("uMacroMean", MACRO_MEAN[0], MACRO_MEAN[1], MACRO_MEAN[2]);
+    uniformBuffer.setTexture("macroSampler", this.macro);
+  }
+
+  getCustomCode(shaderType: string) {
+    if (shaderType !== "fragment") return null;
+    // surfaceAlbedo is the live albedo at this PBR injection point; vPositionW is
+    // the fragment's world position (a varying the PBR shader already declares).
+    // getSamplers() only registers the texture for binding — the sampler itself
+    // must be declared in the shader, hence CUSTOM_FRAGMENT_DEFINITIONS.
+    return {
+      CUSTOM_FRAGMENT_DEFINITIONS: `uniform sampler2D macroSampler;`,
+      CUSTOM_FRAGMENT_UPDATE_ALBEDO: `
+        vec2 macroUv1 = vPositionW.xz / uMacroSizeM;
+        vec2 macroUv2 = vPositionW.xz / (uMacroSizeM * 0.41) + vec2(0.37);
+        vec3 macroA = texture2D(macroSampler, macroUv1).rgb / uMacroMean;
+        vec3 macroB = texture2D(macroSampler, macroUv2).rgb / uMacroMean;
+        vec3 macroVar = macroA * macroB;
+        surfaceAlbedo.rgb *= mix(vec3(1.0), macroVar, uMacroStrength);
+      `,
+    };
+  }
 }
 
 export class TileStreamer {
@@ -222,6 +290,10 @@ export class TileStreamer {
 
     mat.albedoTexture = albedo;
     mat.bumpTexture   = normal;
+    // Lift the grass slightly — the source albedo is quite dark, which also gives
+    // the macro variation more tonal range to work with. albedoColor multiplies
+    // the albedo texture (>1 brightens).
+    mat.albedoColor = new Color3(1.2, 1.2, 1.2);
 
     // Pull AO from R and roughness from G of the ARM map. Leave metalness off the
     // texture (its blue channel holds height, not metalness) and force it to zero —
@@ -231,6 +303,11 @@ export class TileStreamer {
     mat.useRoughnessFromMetallicTextureGreen      = true;
     mat.metallic = 0;
     mat.roughness = 1; // scalar multiplier on the texture's roughness
+
+    // Low-frequency colour variation to hide the detail-texture tiling. Sampled
+    // in world space inside the shader, so it gets no uScale/anisotropy here.
+    const macro = new Texture("/textures/grass_tex_macro.png", this.scene);
+    new GrassMacroPlugin(mat, macro);
 
     mat.backFaceCulling = true; // terrain is only ever viewed from above
     this.terrainMat = mat;
