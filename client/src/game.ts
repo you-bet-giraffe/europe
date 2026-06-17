@@ -425,9 +425,11 @@ export class Game {
     this.scene.render(); // camera-terrain clamp runs via onAfterCheckInputsObservable
     if (this.hud && this.hudVisible) {
       const p = this.playerMesh.position;
+      const c = this.camera.position;
       this.hud.textContent = [
         `fps: ${this.scene.getEngine().getFps().toFixed(0)}`,
         `pos: (${p.x.toFixed(0)}, ${p.y.toFixed(1)}, ${p.z.toFixed(0)})`,
+        `cam: (${c.x.toFixed(0)}, ${c.y.toFixed(1)}, ${c.z.toFixed(0)})`,
         `ground: ${this.lastGroundY !== null ? this.lastGroundY.toFixed(1) : "null"}  flying: ${this.flying}`,
         `tiles: ${this.terrain.loadedCount} coarse  ${this.terrain.fineLoadedCount} fine  ${this.terrain.loadingCount + this.terrain.fineLoadingCount} loading`,
         `geo meshes: ${this.terrain.pickableMeshCount}`,
