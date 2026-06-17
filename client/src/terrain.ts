@@ -1,4 +1,4 @@
-import { Scene, SceneLoader, DracoCompression, PBRMaterial, MaterialPluginBase, Color3, Texture, Quaternion, VertexBuffer, VertexData, type UniformBuffer, type AbstractMesh, type TransformNode } from "@babylonjs/core";
+import { Scene, SceneLoader, DracoCompression, PBRMaterial, MaterialPluginBase, Color3, Texture, Mesh, Quaternion, VertexBuffer, VertexData, type UniformBuffer, type AbstractMesh, type TransformNode } from "@babylonjs/core";
 import "@babylonjs/loaders/glTF";
 
 const TILE_SIZE         = 4000;   // metres per tile edge
@@ -9,6 +9,7 @@ const FINE_UNLOAD_RADIUS = 9000;  // drop fine tiles beyond this distance
 const MAX_CONCURRENT    = 4;      // parallel in-flight GLB requests per tier
 const UPDATE_INTERVAL   = 1000;   // ms between streaming checks
 const GRASS_REPEAT_M    = 20;     // grass texture repeats every N metres
+const SKIRT_DEPTH       = 50;     // metres each tile's edge skirt hangs below the surface
 
 export function configureDraco(): void {
   DracoCompression.Configuration = {
@@ -408,7 +409,69 @@ export class TileStreamer {
     }
     this._lastDebug = `${filename} geo=${geoCount}`;
 
-    return geoCount > 0 && heights ? { root, heights, vpe } : null;
+    if (geoCount > 0 && heights) {
+      this.buildSkirt(root, heights, vpe, mat);
+      return { root, heights, vpe };
+    }
+    return null;
+  }
+
+  // Hang a vertical "skirt" of geometry around the tile's perimeter, dropping
+  // SKIRT_DEPTH below each edge vertex. The pipeline already stitches tile edges
+  // so they meet exactly, but float error or a future regression could still
+  // open a hair-thin T-junction crack; the skirt sits hidden below the surface
+  // and fills any such gap with grass instead of letting the sky show through.
+  private buildSkirt(
+    root: TransformNode, heights: Float32Array, vpe: number, mat: PBRMaterial,
+  ): void {
+    const spacing = TILE_SIZE / (vpe - 1);
+
+    // Walk the perimeter as one closed ring of (col,row) grid cells.
+    const ring: Array<[number, number]> = [];
+    for (let c = 0; c < vpe; c++)        ring.push([c, 0]);          // north  W→E
+    for (let r = 1; r < vpe; r++)        ring.push([vpe - 1, r]);    // east   N→S
+    for (let c = vpe - 2; c >= 0; c--)   ring.push([c, vpe - 1]);    // south  E→W
+    for (let r = vpe - 2; r >= 1; r--)   ring.push([0, r]);          // west   S→N
+
+    const n = ring.length;
+    const positions = new Float32Array(n * 2 * 3);
+    const normals   = new Float32Array(n * 2 * 3);
+    const uvs       = new Float32Array(n * 2 * 2);
+    for (let i = 0; i < n; i++) {
+      const [c, r] = ring[i];
+      const x = c * spacing;
+      const z = r * spacing;
+      const h = heights[r * vpe + c];
+      const p = i * 6;
+      positions[p]     = x; positions[p + 1] = h;              positions[p + 2] = z; // top
+      positions[p + 3] = x; positions[p + 4] = h - SKIRT_DEPTH; positions[p + 5] = z; // bottom
+      // Shade like flat ground so the sliver blends rather than reading as a wall.
+      normals[p + 1] = 1; normals[p + 4] = 1;
+      const u = i * 4;
+      uvs[u] = uvs[u + 2] = x / TILE_SIZE;
+      uvs[u + 1] = uvs[u + 3] = z / TILE_SIZE;
+    }
+
+    // One quad per ring segment, emitted both windings so it shows from either
+    // side without needing a separate culling-off material.
+    const indices: number[] = [];
+    for (let i = 0; i < n; i++) {
+      const j = (i + 1) % n;
+      const ti = i * 2, bi = i * 2 + 1, tj = j * 2, bj = j * 2 + 1;
+      indices.push(ti, tj, bj, ti, bj, bi);   // front
+      indices.push(ti, bj, tj, ti, bi, bj);   // back
+    }
+
+    const skirt = new Mesh("skirt", this.scene);
+    const vd = new VertexData();
+    vd.positions = positions;
+    vd.indices   = indices;
+    vd.normals   = normals;
+    vd.uvs       = uvs;
+    vd.applyToMesh(skirt);
+    skirt.material   = mat;
+    skirt.isPickable = false;
+    skirt.parent     = root; // inherits the tile's transform + enabled/disposed state
   }
 
   // Force-load the tile covering (sceneX, sceneZ) and wait for it to finish.

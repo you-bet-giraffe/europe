@@ -1,9 +1,19 @@
 import { test, expect } from "@playwright/test";
-import { gotoApp, waitForTilesSettled } from "./fixtures";
+import { gotoApp } from "./fixtures";
 
-// Demonstrates a known bug: adjacent terrain tiles don't share their edge
-// geometry, so thin T-junction cracks open along the seams between world tiles.
-// At a grazing view the background shows straight through them as white lines.
+// Read the tile-streaming counts off the debug HUD.
+async function readTiles(page: import("@playwright/test").Page) {
+  return page.evaluate(() => {
+    const t = document.getElementById("debug-hud")?.textContent ?? "";
+    const m = t.match(/(\d+) coarse\s+(\d+) fine\s+(\d+) loading/);
+    return m ? { coarse: +m[1], fine: +m[2], loading: +m[3] } : null;
+  });
+}
+
+// Guards against T-junction cracks at the seams between world tiles. Tiles used
+// to crack here because the fine (2 m) mesh bowed off the coarse (25 m) edge,
+// opening gaps the sky showed through as white lines. The fix stitches fine
+// edges to the coarse chord in the pipeline and adds a perimeter skirt as backup.
 // Reproduces at a seam near scene-space (253429, 0.8, 309882), framed by the
 // camera at (253505, 23.5, 309956) — the same transforms used to spot it by eye.
 //
@@ -11,13 +21,10 @@ import { gotoApp, waitForTilesSettled } from "./fixtures";
 // colour, then counts magenta pixels that appear *below* the terrain silhouette
 // in each column — i.e. background visible through a hole, not the open sky
 // above the horizon. A seamless terrain leaks zero such pixels.
-//
-// Marked test.fail() because the gaps are still present: this keeps the suite
-// green while documenting the defect, and will turn into a hard failure (an
-// unexpected pass) once tiles are stitched/skirted — at which point drop the
-// test.fail() so it guards against regressions.
 test("no background shows through world-tile seams", async ({ page }) => {
-  test.fail();
+  // The fine tiles in view are heavy (≈4 M verts each) and stream in slowly; an
+  // unfinished load would show as background and falsely fail. Allow time to load.
+  test.setTimeout(180_000);
   await gotoApp(page);
 
   // Drop the player onto the seam so terrain streams in around it.
@@ -27,7 +34,19 @@ test("no background shows through world-tile seams", async ({ page }) => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     s.meshes.find((m: any) => m.name === "player").position.set(253429, 0.8, 309882);
   });
-  await waitForTilesSettled(page);
+
+  // Wait until streaming genuinely drains — not just the HUD line momentarily
+  // holding steady mid-decode, which waitForTilesSettled() can mistake for done.
+  // Require several consecutive low-load reads so a lull between batches doesn't
+  // look like completion.
+  let settled = 0;
+  for (let i = 0; i < 120 && settled < 6; i++) {
+    const s = await readTiles(page);
+    settled = s && s.loading <= 1 && s.fine >= 6 ? settled + 1 : 0;
+    await page.waitForTimeout(1000);
+  }
+  expect(settled, "terrain did not finish streaming in").toBeGreaterThanOrEqual(6);
+  await page.waitForTimeout(1000);
 
   const r = await page.evaluate(() => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any

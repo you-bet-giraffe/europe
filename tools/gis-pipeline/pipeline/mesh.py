@@ -226,6 +226,11 @@ def mesh(config, compress: bool = True) -> Path:
             # Read a 163×163 window — 1px beyond each edge so central differences
             # for border vertices use real neighbours from adjacent tiles.
             # boundless=True pads with 0.0 (sea level) for world-edge tiles.
+            #
+            # Coarse tiles need no edge stitching: a tile's east column is DEM
+            # col (tx+1)*tp — exactly the west column of its neighbour — so shared
+            # edges already sample identical heights. Only the fine mesh, which
+            # upsamples between these, must be snapped back (see _process_fine_tile).
             ext_window = Window(col_off - 1, row_off - 1, vpe + 2, vpe + 2)
             elev_ext = dem.read(
                 1, window=ext_window, boundless=True, fill_value=0.0
@@ -282,7 +287,30 @@ def _process_fine_tile(args: tuple) -> None:
             resampling=_Res.cubic,
         ).astype("float32")
 
+        # The coarse grid this tile must stitch to: the exact DEM samples mesh()
+        # turns into the coarse tile's vertices (the central coarse_vpe window).
+        coarse = dem.read(
+            1,
+            window=_Win(col_off, row_off, coarse_vpe, coarse_vpe),
+            boundless=True,
+            fill_value=0.0,
+        ).astype("float32")
+
     elev = elev_ext[1:-1, 1:-1]   # strip the 1-px border → fine_vpe × fine_vpe
+
+    # Snap the four borders onto the coarse tile's edges to eliminate T-junction
+    # cracks. The coarse mesh draws each edge as straight segments between its
+    # 25 m vertices; the fine edge (bicubic) bows off those chords, opening gaps
+    # against coarse — and against other fine tiles, which bow differently.
+    # Linearly interpolating the coarse edge heights puts every fine border vertex
+    # back onto the coarse chord. Adjacent tiles share the DEM column/row sampled
+    # here, so their snapped edges come out identical (fine↔fine and fine↔coarse).
+    xc = np.linspace(0.0, 1.0, coarse_vpe)
+    xf = np.linspace(0.0, 1.0, fine_vpe)
+    elev[0, :]  = np.interp(xf, xc, coarse[0, :])    # north
+    elev[-1, :] = np.interp(xf, xc, coarse[-1, :])   # south
+    elev[:, 0]  = np.interp(xf, xc, coarse[:, 0])    # west
+    elev[:, -1] = np.interp(xf, xc, coarse[:, -1])   # east
 
     vertices, faces = _build_vertices_faces(elev, tile_size)
     normals          = _compute_normals(elev_ext, fine_resolution)
