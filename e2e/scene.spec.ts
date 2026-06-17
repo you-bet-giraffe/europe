@@ -18,10 +18,10 @@ test.describe("terrain scene", () => {
     expect(st.sampleHasNormals).toBe(true);
   });
 
-  test("terrain has UVs and a grass diffuse texture", async ({ page }) => {
+  test("terrain has UVs and a grass colour texture", async ({ page }) => {
     const st = await readState(page);
     expect(st.sampleHasUVs).toBe(true);
-    expect(st.sampleHasDiffuseTexture).toBe(true);
+    expect(st.sampleHasColorTexture).toBe(true);
   });
 
   test("player rests on the terrain surface", async ({ page }) => {

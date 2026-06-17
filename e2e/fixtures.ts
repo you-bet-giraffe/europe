@@ -6,7 +6,7 @@ export interface SceneState {
   terrainMeshCount: number;
   sampleHasNormals: boolean;
   sampleHasUVs: boolean;
-  sampleHasDiffuseTexture: boolean;
+  sampleHasColorTexture: boolean;
   playerY: number | null;
   ground: number | null;
   skyboxActive: boolean;
@@ -22,7 +22,7 @@ export async function readState(page: Page): Promise<SceneState> {
   return page.evaluate(() => {
     const empty: SceneState = {
       ready: false, terrainMeshCount: 0, sampleHasNormals: false, sampleHasUVs: false,
-      sampleHasDiffuseTexture: false, playerY: null, ground: null, skyboxActive: false,
+      sampleHasColorTexture: false, playerY: null, ground: null, skyboxActive: false,
       tilesLoading: -1, characterLoaded: false, characterAnimating: false, fps: 0,
     };
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -57,7 +57,11 @@ export async function readState(page: Page): Promise<SceneState> {
       terrainMeshCount: terrain.length,
       sampleHasNormals: sample ? !!sample.getVerticesData("normal") : false,
       sampleHasUVs: sample ? !!sample.getVerticesData("uv") : false,
-      sampleHasDiffuseTexture: sample?.material ? !!sample.material.diffuseTexture : false,
+      // The terrain is a PBRMaterial (albedoTexture); older StandardMaterial used
+      // diffuseTexture. Accept either so the check tracks "has a colour map".
+      sampleHasColorTexture: sample?.material
+        ? !!(sample.material.albedoTexture || sample.material.diffuseTexture)
+        : false,
       playerY: player ? player.position.y : null,
       ground,
       skyboxActive,

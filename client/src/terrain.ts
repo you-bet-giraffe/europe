@@ -1,4 +1,4 @@
-import { Scene, SceneLoader, DracoCompression, StandardMaterial, Color3, Texture, Quaternion, VertexBuffer, VertexData, type AbstractMesh, type TransformNode } from "@babylonjs/core";
+import { Scene, SceneLoader, DracoCompression, PBRMaterial, Texture, Quaternion, VertexBuffer, VertexData, type AbstractMesh, type TransformNode } from "@babylonjs/core";
 import "@babylonjs/loaders/glTF";
 
 const TILE_SIZE         = 4000;   // metres per tile edge
@@ -200,19 +200,38 @@ export class TileStreamer {
     this.loaded.get(key)?.root.setEnabled(true);
   }
 
-  // Shared grass material — one texture for every tile, created on first use.
-  private terrainMat: StandardMaterial | null = null;
+  // Shared grass material — one PBR material for every tile, created on first use.
+  private terrainMat: PBRMaterial | null = null;
 
-  private getTerrainMaterial(): StandardMaterial {
+  private getTerrainMaterial(): PBRMaterial {
     if (this.terrainMat) return this.terrainMat;
-    const mat = new StandardMaterial("terrain", this.scene);
-    const tex = new Texture("/textures/grass.jpg", this.scene);
-    tex.uScale = tex.vScale = TILE_SIZE / GRASS_REPEAT_M;
+    const mat = new PBRMaterial("terrain", this.scene);
+
+    const albedo = new Texture("/textures/grass_tex_albedo.png", this.scene);
+    const normal = new Texture("/textures/grass_tex_normal.png", this.scene);
+    // ARM: R = ambient occlusion, G = roughness, B = height (height unused).
+    const arm    = new Texture("/textures/grass_tex_arm.png", this.scene);
+
+    // All three sets of texels share the planar tile UVs, so they tile together.
     // Max anisotropy — the ground is viewed at grazing angles, where the per-pixel
     // texel footprint is highly elongated; 16× sampling kills the minification moiré.
-    tex.anisotropicFilteringLevel = 16;
-    mat.diffuseTexture = tex;
-    mat.specularColor = new Color3(0, 0, 0); // grass shouldn't glint
+    for (const tex of [albedo, normal, arm]) {
+      tex.uScale = tex.vScale = TILE_SIZE / GRASS_REPEAT_M;
+      tex.anisotropicFilteringLevel = 16;
+    }
+
+    mat.albedoTexture = albedo;
+    mat.bumpTexture   = normal;
+
+    // Pull AO from R and roughness from G of the ARM map. Leave metalness off the
+    // texture (its blue channel holds height, not metalness) and force it to zero —
+    // grass is dielectric, so it must never read B as metallic.
+    mat.metallicTexture = arm;
+    mat.useAmbientOcclusionFromMetallicTextureRed = true;
+    mat.useRoughnessFromMetallicTextureGreen      = true;
+    mat.metallic = 0;
+    mat.roughness = 1; // scalar multiplier on the texture's roughness
+
     mat.backFaceCulling = true; // terrain is only ever viewed from above
     this.terrainMat = mat;
     return mat;
