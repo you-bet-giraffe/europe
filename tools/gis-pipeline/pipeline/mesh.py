@@ -19,6 +19,9 @@ except ImportError:
     _HAS_DRACO = False
 
 
+FINE_EDGE_FEATHER_M = 30.0   # width of the fine-tile edge ease-in band (metres)
+
+
 # ── Normal computation ────────────────────────────────────────────────────────
 
 def _compute_normals(elev_ext: np.ndarray, resolution: float) -> np.ndarray:
@@ -298,19 +301,35 @@ def _process_fine_tile(args: tuple) -> None:
 
     elev = elev_ext[1:-1, 1:-1]   # strip the 1-px border → fine_vpe × fine_vpe
 
-    # Snap the four borders onto the coarse tile's edges to eliminate T-junction
-    # cracks. The coarse mesh draws each edge as straight segments between its
-    # 25 m vertices; the fine edge (bicubic) bows off those chords, opening gaps
-    # against coarse — and against other fine tiles, which bow differently.
-    # Linearly interpolating the coarse edge heights puts every fine border vertex
-    # back onto the coarse chord. Adjacent tiles share the DEM column/row sampled
-    # here, so their snapped edges come out identical (fine↔fine and fine↔coarse).
+    # Feather the four borders onto the coarse tile's surface to eliminate
+    # T-junction cracks *without* leaving a lip. The coarse mesh draws each edge
+    # as straight segments between its 25 m vertices; the fine edge (bicubic) bows
+    # off those chords, opening gaps against coarse — and against other fine tiles,
+    # which bow differently. A hard snap puts the border back on the chord but
+    # leaves the interior bicubic, so on steep terrain the surface springs several
+    # metres off the chord over a single quad — a visible wall along every seam.
+    #
+    # Instead, blend the fine surface toward the coarse linear (bilinear-upsampled)
+    # surface with a weight that is exactly 1 on the border and eases to 0 over a
+    # ~30 m band inward. At the border the result equals the coarse chord — and
+    # adjacent tiles share the DEM column/row sampled here, so their borders come
+    # out identical (fine↔fine and fine↔coarse, crack-free) — while the interior
+    # keeps its true bicubic detail, so the wall becomes a gentle ramp.
     xc = np.linspace(0.0, 1.0, coarse_vpe)
     xf = np.linspace(0.0, 1.0, fine_vpe)
-    elev[0, :]  = np.interp(xf, xc, coarse[0, :])    # north
-    elev[-1, :] = np.interp(xf, xc, coarse[-1, :])   # south
-    elev[:, 0]  = np.interp(xf, xc, coarse[:, 0])    # west
-    elev[:, -1] = np.interp(xf, xc, coarse[:, -1])   # east
+    tmp = np.empty((coarse_vpe, fine_vpe), np.float32)
+    for r in range(coarse_vpe):
+        tmp[r] = np.interp(xf, xc, coarse[r])
+    coarse_up = np.empty((fine_vpe, fine_vpe), np.float32)
+    for c in range(fine_vpe):
+        coarse_up[:, c] = np.interp(xf, xc, tmp[:, c])
+
+    feather = max(1, int(round(FINE_EDGE_FEATHER_M / fine_resolution)))
+    idx = np.arange(fine_vpe)
+    dist = np.minimum(idx, fine_vpe - 1 - idx)                 # quads to nearest edge
+    ramp = 0.5 + 0.5 * np.cos(np.pi * np.clip(dist / feather, 0.0, 1.0))  # 1→0
+    w = np.maximum(ramp[:, None], ramp[None, :])               # nearest edge dominates
+    elev = ((1.0 - w) * elev + w * coarse_up).astype(np.float32)
 
     vertices, faces = _build_vertices_faces(elev, tile_size)
     normals          = _compute_normals(elev_ext, fine_resolution)
