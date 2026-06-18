@@ -49,7 +49,7 @@ const MACRO_MEAN: [number, number, number] = [0.3224, 0.3542, 0.0675];
 // repeat of its own — and each is mean-normalised so the result averages 1.0.
 class GrassMacroPlugin extends MaterialPluginBase {
   sizeM    = 240;  // world period of octave 1, in metres (octave 2 is 0.41×)
-  strength = 0.85; // 0 = no variation, 1 = full
+  strength = 1.0;  // 0 = no variation, 1 = full (can exceed 1 to over-drive contrast)
 
   constructor(material: PBRMaterial, private readonly macro: Texture) {
     super(material, "GrassMacro", 200, {});
