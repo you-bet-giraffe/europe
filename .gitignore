@@ -22,6 +22,9 @@ build/
 __pycache__/
 *.pyc
 
+# GIS pipeline generated output (tiles, meshes, DEMs) — kept local, not in git
+tools/gis-pipeline/*/output/
+
 # Logs
 *.log
 npm-debug.log*
